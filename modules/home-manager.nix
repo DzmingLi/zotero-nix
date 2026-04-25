@@ -8,6 +8,16 @@ let
   # XPIProvider DB_SCHEMA increment.
   schemaVersion = 37;
 
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+
+  # Mozilla profile layout differs by platform:
+  #   Linux:  <dataDir>/<profileName>           with Path=<profileName>
+  #   Darwin: <dataDir>/Profiles/<profileName>  with Path=Profiles/<profileName>
+  profileSubdir =
+    if isDarwin then "Profiles/${cfg.profileName}" else cfg.profileName;
+  profileDir = "${cfg.dataDir}/${profileSubdir}";
+  profilesIni = "${cfg.dataDir}/profiles.ini";
+
   extensionsJson = pkgs.runCommand "extensions.json"
     { nativeBuildInputs = [ pkgs.jq ]; }
     ''
@@ -38,14 +48,32 @@ in
       description = "The Zotero package to install.";
     };
 
+    dataDir = lib.mkOption {
+      type = lib.types.str;
+      default =
+        if isDarwin
+        then "${config.home.homeDirectory}/Library/Application Support/Zotero"
+        else "${config.home.homeDirectory}/.zotero/zotero";
+      defaultText = lib.literalExpression ''
+        if pkgs.stdenv.hostPlatform.isDarwin
+        then "''${config.home.homeDirectory}/Library/Application Support/Zotero"
+        else "''${config.home.homeDirectory}/.zotero/zotero"
+      '';
+      description = ''
+        Directory containing Zotero's <code>profiles.ini</code> and the
+        <code>Profiles/</code> subtree (macOS) or profile dirs directly (Linux).
+      '';
+    };
+
     profileName = lib.mkOption {
       type = lib.types.str;
       default = "managed";
       description = ''
         Zotero profile name. The profile lives at
-        <code>~/.zotero/zotero/&lt;profileName&gt;</code> and is registered in
-        <code>profiles.ini</code> as default. Launch Zotero normally — it will
-        pick this profile.
+        <code>&lt;dataDir&gt;/&lt;profileName&gt;</code> on Linux or
+        <code>&lt;dataDir&gt;/Profiles/&lt;profileName&gt;</code> on macOS,
+        and is registered in <code>profiles.ini</code> as default. Launch Zotero
+        normally — it will pick this profile.
       '';
     };
 
@@ -67,9 +95,11 @@ in
     home.packages = [ cfg.package ];
 
     home.activation.zotero-plugins = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-      _zdir="$HOME/.zotero/zotero"
-      _profile="${cfg.profileName}"
-      _pdir="$_zdir/$_profile"
+      _pdir=${lib.escapeShellArg profileDir}
+      _pini=${lib.escapeShellArg profilesIni}
+      _profile=${lib.escapeShellArg cfg.profileName}
+      _path_field=${lib.escapeShellArg profileSubdir}
+
       $DRY_RUN_CMD mkdir -p "$_pdir/extensions"
 
       # Sweep previously-managed XPI symlinks (anything pointing into the nix
@@ -91,7 +121,6 @@ in
       $DRY_RUN_CMD install -m 644 ${userJs}        "$_pdir/user.js"
 
       # Register the profile in profiles.ini and make it default.
-      _pini="$_zdir/profiles.ini"
       if [ ! -f "$_pini" ]; then
         $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -m 644 /dev/stdin "$_pini" <<EOF
       [General]
@@ -99,14 +128,14 @@ in
 
       EOF
       fi
-      if ! grep -q "^Path=$_profile$" "$_pini"; then
+      if ! grep -q "^Path=$_path_field$" "$_pini"; then
         $DRY_RUN_CMD ${pkgs.gnused}/bin/sed -i 's/^Default=1$/Default=0/' "$_pini"
         cat >> "$_pini" <<EOF
 
-      [Profile-${cfg.profileName}]
-      Name=${cfg.profileName}
+      [Profile-$_profile]
+      Name=$_profile
       IsRelative=1
-      Path=${cfg.profileName}
+      Path=$_path_field
       Default=1
       EOF
       fi
