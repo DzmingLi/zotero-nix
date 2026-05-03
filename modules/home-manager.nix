@@ -18,11 +18,22 @@ let
   profileDir = "${cfg.dataDir}/${profileSubdir}";
   profilesIni = "${cfg.dataDir}/profiles.ini";
 
+  # Mozilla XPIProvider only loads extensions whose `path` lies inside a
+  # recognized scope dir (PROFILE/APP/SYSTEM). Rewrite each addon's path and
+  # rootURI from the build-time nix-store path to the profile-scope symlink
+  # the activation script drops into <profileDir>/extensions/. The symlink
+  # still resolves to /nix/store, so loading happens directly from immutable
+  # storage — only the path Mozilla sees is profile-scoped.
   extensionsJson = pkgs.runCommand "extensions.json"
     { nativeBuildInputs = [ pkgs.jq ]; }
     ''
       jq -s --argjson sv ${toString schemaVersion} \
-        '{schemaVersion: $sv, addons: .}' \
+            --arg extdir ${lib.escapeShellArg "${profileDir}/extensions"} \
+        '{schemaVersion: $sv,
+          addons: [ .[] | . + {
+            path:    ($extdir + "/" + .id + ".xpi"),
+            rootURI: ("jar:file://" + $extdir + "/" + .id + ".xpi!/")
+          } ]}' \
         ${lib.concatMapStringsSep " " (p: "${p}/addon.json") cfg.plugins} \
         > $out
     '';
